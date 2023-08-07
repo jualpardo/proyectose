@@ -1,0 +1,333 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#define PRO_CPU 0
+#define APP_CPU 1
+#define NOAFF_CPU tskNO_AFFINITY
+//Registro del pin para sensor temp-humedad.
+DHT1 dht(26, DHT11);
+DHT2 dht(27, DHT11);
+DHT3 dht(14, DHT11);
+DHT4 dht(12, DHT11);
+//------------------------------------------
+
+//Inicialización de variables a utilizar.
+//botones:
+int iniciar = 15;
+int detener = 2;
+int reiniciar = 4;
+//válvulas:
+int valv1 = 16;
+int valv2 = 17;
+int valv3 = 5;
+int valv4 = 18;
+/*variables necesarias:
+ * control de tiempo.
+ * cantidad de riego por día.
+ * estado del sistema, riego (activado/desactivado).
+*/
+long tiempo_inicio = millis();
+long tiempo_sensado = millis();
+int intervalo_riego = 3;
+bool detenido = true;
+//----------------------------------------
+
+
+#define COLUMS 16
+#define ROWS   2
+
+#define PAGE   ((COLUMS) * (ROWS))
+
+LiquidCrystal_I2C lcd(PCF8574_ADDR_A21_A11_A00, 4, 5, 6, 16, 11, 12, 13, 14, POSITIVE);
+
+
+void TestHwm(char *taskName);
+void Taskdetener(void *pvParameters);
+void Taskmodalidad(void *pvParameters);
+void Taskcomportamiento(void *pvParameters);
+void Taskiniciar(void *pvParameters);
+
+void setup() {
+  // put your setup code here, to run once:
+    //Se activa comunicación serial para uso del monitor.
+    Serial.begin(9600);
+    //---------------------------------------------------
+    
+    //Se inicializa el sensor y se espera estabilización.
+    dht.begin();
+    delay(2000);
+    //---------------------------------------------------
+    //Se configuran los pines.
+    pinMode(iniciar, INPUT_PULLDOWN);
+    pinMode(detener, INPUT_PULLDOWN);
+    pinMode(reiniciar, INPUT_PULLDOWN);
+
+    pinMode(valv1, OUTPUT);
+    pinMode(valv2, OUTPUT);
+    pinMode(valv3, OUTPUT);
+    pinMode(valv4, OUTPUT);
+    //-------------------------
+
+    //Por precaución dejamos todas las válvulas apagadas/cerradas.
+    digitalWrite(valv1, LOW);
+    digitalWrite(valv2, LOW);
+    digitalWrite(valv3, LOW);
+    digitalWrite(valv4, LOW);
+    //------------------------------------------------------------
+  // xTaskCreatePinnedToCore(TaskLed, "TaskLed",1024,NULL,3,NULL,APP_CPU);
+  // TaskLed: Nombre de la funcion 
+  // "TaskLed": Nombre de la tarea
+  // 3: prioridad que puede ser hasta 27 
+  // APP_CPU: es el nucleo seleccionado
+  xTaskCreatePinnedToCore(Taskdetener, "Taskdetener",4096,NULL,1,NULL,APP_CPU);
+  xTaskCreatePinnedToCore(Taskmodalidad, "Taskmodalidad",4096,NULL,1,NULL,APP_CPU);
+  xTaskCreatePinnedToCore(Taskcomportamiento, "Taskcomportamiento",4096,NULL,1,NULL,APP_CPU);
+  xTaskCreatePinnedToCore(Taskiniciar, "Taskiniciar",4096,NULL,1,NULL,APP_CPU);
+
+}
+void loop() {}
+void riego(int tiempo_riego,int valvs){ //Comportamiento de riego.
+    //Cantidad de milisegundos que debe pasar para activar riego por día.
+    //long periodo_riego = 86400000 / intervalo_riego;
+    long periodo_riego = 30000 / intervalo_riego; //30s para prueba.
+    //----------------------------------------------------------
+
+    if ((millis() - tiempo_inicio) >= periodo_riego){
+        //Se actualiza el tiempo para el cálculo del siguiente periodo.
+        tiempo_inicio = millis();
+        //-------------------------------------------------------------
+        switch(valvs){
+          case 1:
+            digitalWrite(valv1, HIGH);
+            delay(tiempo_riego); //Se realiza un riego de 2,5[s].
+            digitalWrite(valv1, LOW);
+            break;        
+          case 2:
+            digitalWrite(valv2, HIGH);
+            delay(tiempo_riego); //Se realiza un riego de 2,5[s].
+            digitalWrite(valv2, LOW);
+            break;
+          case 3:
+            digitalWrite(valv3, HIGH);
+            delay(tiempo_riego); //Se realiza un riego de 2,5[s].
+            digitalWrite(valv3, LOW);
+            break;
+          case 4:
+            digitalWrite(valv4, HIGH);
+            delay(tiempo_riego); //Se realiza un riego de 2,5[s].
+            digitalWrite(valv4, LOW);
+            break;
+        }
+        //Se enciende la electroválvula para riego.
+        //--------------------------------------------
+
+        
+
+        //Se apagan las electroválvulas para riego.
+        
+        
+        
+        
+        //-----------------------------------------
+    }
+}
+
+void lectura_sensor(int temperatura_sensada, int humedad_sensada){ //Registro de variables.
+    if ((millis() - tiempo_sensado) >= 2000){ //Intervalo de tiempo (2s) para mediciones.
+        Serial.print("Temperatura: ");
+        Serial.print(temperatura_sensada);
+        Serial.println("°C");
+
+        Serial.print("Humedad: ");
+        Serial.print(humedad_sensada);
+        Serial.println("%");
+
+        Serial.println();
+
+        //Se actualiza el tiempo para el intervalo del siguiente registro.
+        tiempo_sensado = millis();
+    }
+}
+
+
+
+
+
+// Tester: permite saber cuanta RAM no se esta usando una tarea y considerar el valor mas cercano mayor con 2^n
+// Considerar que el maximo de RAM es 2^12 = 4096 bytes
+// Esta funcion ocupa 512 bytes
+void TestHwm(char *taskName){
+  static int stack_hwm, stack_hwm_temp;
+
+  stack_hwm_temp = uxTaskGetStackHighWaterMark(nullptr);
+  if(!stack_hwm || (stack_hwm_temp < stack_hwm)){
+    stack_hwm=stack_hwm_temp;
+    Serial.printf("%s has stack hwm %u\n",taskName,stack_hwm);
+  }
+} 
+
+void Taskiniciar(void *pvParameters){
+    (void) pvParameters;-
+      //Lecturas del sensor.
+    float temperatura = dht.readTemperature();
+    float humedad = dht.readHumidity();
+    lectura_sensor(temperatura, humedad);
+    //--------------------
+
+    //Arranque del sistema embebido.
+    if (digitalRead(iniciar)){
+        while(digitalRead(iniciar)){
+            //Espera que suelte el botón.
+        }
+        detenido = false;
+    }
+}
+
+void Taskdetener(void *pvParameters){
+    (void) pvParameters;
+    if (digitalRead(detener)){ //Si se activa el botón de parada.
+        while(digitalRead(detener)){
+            //Espera que suelte el botón.
+        }
+        detenido = true; //Actualiza estado del sistema a detenido.
+    }
+}
+
+void Taskmodalidad(void *pvParameters){
+    (void) pvParameters;
+    if (digitalRead(reiniciar)){ //Si activa el botón de reinicio.
+        while(digitalRead(reiniciar)){
+            //Espera que suelte el botón.
+        }
+        intervalo_riego = 3; //Reinicia la configuración de riego al intervalo promedio por día.
+    }
+}
+
+void Taskcomportamiento1(void *pvParameters){
+   //Con el sistema iniciado.
+   (void) pvParameters;
+    //Lecturas del sensor.
+    float temperatura1 = dht.readTemperature();
+    float humedad1 = dht.readHumidity();
+    lectura_sensor(temperatura1, humedad1);
+    //--------------------
+    if (!(detenido)){
+        if (temperatura1 >= 27){ //Si es muy caluroso, riega las plantas.
+            riego(4000,1); //Por cuatro segundos(tiempo máximo prueba).
+        }
+        else if (23 <= temperatura1 < 27){ //Si la temperatura es regular...
+            riego(2500,1); //Riega menos tiempo (tiempo medio prueba).
+        }
+        else { //Si la temperatura es muy baja, riega con menos frecuencia.
+            riego(1000,1); //Riega poco tiempo (tiempo mínimo prueba)
+        }
+
+        if (humedad1 <= 30){ //Si hay poca humedad...
+            intervalo_riego = 6; //Se aumenta la cantidad de intervalos por día para el cálculo de riego.
+        }
+        else if (30 < humedad1 < 60){ //Si la humedad es promedio...
+            intervalo_riego = 3; //Se aplica una cantidad de riego promedio por día.
+        }
+        else {
+            intervalo_riego = 2; //Si la humedad es muy alta, se disminuye el riego para no
+            //seguir humedeciendo el ambiente y las plantas pueda evapotranspirar.
+        }
+    }
+}
+
+
+void Taskcomportamiento2(void *pvParameters){
+   //Con el sistema iniciado.
+   (void) pvParameters;
+    //Lecturas del sensor.
+    float temperatura = dht.readTemperature();
+    float humedad = dht.readHumidity();
+    lectura_sensor(temperatura2, humedad2);
+    //--------------------
+    if (!(detenido)){
+        if (temperatura2 >= 27){ //Si es muy caluroso, riega las plantas.
+            riego(4000,2); //Por cuatro segundos(tiempo máximo prueba).
+        }
+        else if (23 <= temperatura2 < 27){ //Si la temperatura es regular...
+            riego(2500,2); //Riega menos tiempo (tiempo medio prueba).
+        }
+        else { //Si la temperatura es muy baja, riega con menos frecuencia.
+            riego(1000,2); //Riega poco tiempo (tiempo mínimo prueba)
+        }
+
+        if (humedad2 <= 30){ //Si hay poca humedad...
+            intervalo_riego = 6; //Se aumenta la cantidad de intervalos por día para el cálculo de riego.
+        }
+        else if (30 < humedad2 < 60){ //Si la humedad es promedio...
+            intervalo_riego = 3; //Se aplica una cantidad de riego promedio por día.
+        }
+        else {
+            intervalo_riego = 2; //Si la humedad es muy alta, se disminuye el riego para no
+            //seguir humedeciendo el ambiente y las plantas pueda evapotranspirar.
+        }
+    }
+}
+
+void Taskcomportamiento3(void *pvParameters){
+   //Con el sistema iniciado.
+   (void) pvParameters;
+    //Lecturas del sensor.
+    float temperatura3 = dht.readTemperature();
+    float humedad3 = dht.readHumidity();
+    lectura_sensor(temperatura, humedad);
+    //--------------------
+    if (!(detenido)){
+        if (temperatura3 >= 27){ //Si es muy caluroso, riega las plantas.
+            riego(4000,3); //Por cuatro segundos(tiempo máximo prueba).
+        }
+        else if (23 <= temperatura3 < 27){ //Si la temperatura es regular...
+            riego(2500,3); //Riega menos tiempo (tiempo medio prueba).
+        }
+        else { //Si la temperatura es muy baja, riega con menos frecuencia.
+            riego(1000,3); //Riega poco tiempo (tiempo mínimo prueba)
+        }
+
+        if (humedad3 <= 30){ //Si hay poca humedad...
+            intervalo_riego = 6; //Se aumenta la cantidad de intervalos por día para el cálculo de riego.
+        }
+        else if (30 < humedad3 < 60){ //Si la humedad es promedio...
+            intervalo_riego = 3; //Se aplica una cantidad de riego promedio por día.
+        }
+        else {
+            intervalo_riego = 2; //Si la humedad es muy alta, se disminuye el riego para no
+            //seguir humedeciendo el ambiente y las plantas pueda evapotranspirar.
+        }
+    }
+}
+
+void Taskcomportamiento4(void *pvParameters){
+   //Con el sistema iniciado.
+   (void) pvParameters;
+    //Lecturas del sensor.
+    float temperatura4 = dht.readTemperature();
+    float humedad4 = dht.readHumidity();
+    lectura_sensor(temperatura, humedad);
+    //--------------------
+    if (!(detenido)){
+        if (temperatura4 >= 27){ //Si es muy caluroso, riega las plantas.
+            riego(4000,4); //Por cuatro segundos(tiempo máximo prueba).
+        }
+        else if (23 <= temperatura4 < 27){ //Si la temperatura es regular...
+            riego(2500,4); //Riega menos tiempo (tiempo medio prueba).
+        }
+        else { //Si la temperatura es muy baja, riega con menos frecuencia.
+            riego(1000,4); //Riega poco tiempo (tiempo mínimo prueba)
+        }
+
+        if (humedad4 <= 30){ //Si hay poca humedad...
+            intervalo_riego = 6; //Se aumenta la cantidad de intervalos por día para el cálculo de riego.
+        }
+        else if (30 < humedad4 < 60){ //Si la humedad es promedio...
+            intervalo_riego = 3; //Se aplica una cantidad de riego promedio por día.
+        }
+        else {
+            intervalo_riego = 2; //Si la humedad es muy alta, se disminuye el riego para no
+            //seguir humedeciendo el ambiente y las plantas pueda evapotranspirar.
+        }
+    }
+}
